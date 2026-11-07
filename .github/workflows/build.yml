@@ -34,6 +34,32 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
+      - name: Test on iOS Simulator
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['devices']
+          c = [(k, x) for k, v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')]
+          c.sort(key=lambda kx: kx[0])
+          print(c[-1][1]['udid'])")
+          echo "Simulator: $UDID"
+          xcodebuild test \
+            -project Halo.xcodeproj \
+            -scheme Halo \
+            -destination "id=$UDID" \
+            -derivedDataPath build-test \
+            2>&1 | tee test.log | grep -E "Test Case .*(passed|failed)|error:|XCTAssert|Executed|\*\* TEST" || true
+          grep -q "\*\* TEST SUCCEEDED \*\*" test.log
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
+          if-no-files-found: ignore
+
       - name: Build
         run: |
           set -o pipefail

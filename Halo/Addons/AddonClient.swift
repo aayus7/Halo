@@ -7,6 +7,8 @@ enum AddonError: LocalizedError {
     case invalidResponse(String)
     case addonMessage(String)
     case unsupported(String)
+    case lockedToApp(String)
+    case unauthorized(String)
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +18,8 @@ enum AddonError: LocalizedError {
         case .invalidResponse(let what): return "The addon sent an unexpected \(what)."
         case .addonMessage(let message): return message
         case .unsupported(let why): return why
+        case .lockedToApp(let app): return "This addon only works inside the \(app) app, so Halo can't use it."
+        case .unauthorized(let message): return message
         }
     }
 }
@@ -33,13 +37,17 @@ struct AddonContext: Sendable {
 /// Talks to addons over HTTP. Compatible with the Eclipse / BitChord addon protocol.
 /// See docs/ADDON_SPEC.md.
 enum AddonClient {
-    static let session: URLSession = {
+    /// Replaceable so tests can route requests to a mock addon.
+    nonisolated(unsafe) static var session: URLSession = makeSession()
+
+    static func makeSession(protocolClasses: [AnyClass] = []) -> URLSession {
         let config = URLSessionConfiguration.default
+        if !protocolClasses.isEmpty { config.protocolClasses = protocolClasses + (config.protocolClasses ?? []) }
         config.timeoutIntervalForRequest = 25
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.httpAdditionalHeaders = ["User-Agent": "Halo/0.2 (iOS)"]
         return URLSession(configuration: config)
-    }()
+    }
 
     /// Accepts "https://x.com/TOKEN/manifest.json", "https://x.com/TOKEN/", or "x.com/TOKEN".
     /// Only a trailing "*.json" filename is removed. Tokens in the path and query are kept.
@@ -79,6 +87,9 @@ enum AddonClient {
         }
         guard !manifest.id.isEmpty else {
             throw AddonError.addonMessage("That URL answered, but not with an addon manifest.")
+        }
+        if let app = manifest.lockedToApp {
+            throw AddonError.lockedToApp(app)
         }
         guard manifest.supports("search") || manifest.supports("catalog") else {
             throw AddonError.addonMessage("This addon declares \(manifest.resources.joined(separator: ", ")). Halo needs search or catalog.")
@@ -163,8 +174,36 @@ enum AddonClient {
         }
     }
 
+    /// Resolves a stream. If the addon hands back something iPhone can't play (DASH, Ogg, DRM),
+    /// it is asked again with each lower option of its "quality" setting before giving up.
     static func resolveStream(_ ctx: AddonContext, trackID: String) async throws -> StreamInfo {
-        let response: StreamResponse = try await get(try url(ctx, ["stream", trackID], ctx.params),
+        var params = ctx.params
+        var lastError: Error = AddonError.invalidResponse("stream")
+        for quality in qualityLadder(ctx) {
+            if let q = quality { params[q.0] = q.1 }
+            do {
+                return try await resolveStreamOnce(ctx, trackID: trackID, params: params)
+            } catch let error as AddonError {
+                guard case .unsupported = error else { throw error }
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    /// The current quality first, then every option listed after it (manifests list best → worst).
+    static func qualityLadder(_ ctx: AddonContext) -> [(String, String)?] {
+        guard let setting = ctx.addon.manifest.settings.first(where: {
+            $0.type == .select && $0.key.lowercased().contains("quality") && !$0.key.lowercased().contains("video")
+        }) else { return [nil] }
+        let values = setting.options.compactMap { $0.value?.queryValue }
+        let current = ctx.params[setting.key] ?? setting.default?.queryValue
+        guard let current, let start = values.firstIndex(of: current) else { return [nil] }
+        return [nil] + values[(start + 1)...].map { (setting.key, $0) }
+    }
+
+    private static func resolveStreamOnce(_ ctx: AddonContext, trackID: String, params: [String: String]) async throws -> StreamInfo {
+        let response: StreamResponse = try await get(try url(ctx, ["stream", trackID], params),
                                                      what: "stream", notices: ctx, retryUnavailable: true)
         if let error = response.error, !error.isEmpty, response.url == nil {
             throw AddonError.addonMessage(error)
@@ -176,11 +215,11 @@ enum AddonClient {
             throw AddonError.unsupported("This stream is DRM-protected, which Halo can't play.")
         }
         if response.transport == "dash" {
-            throw AddonError.unsupported("This addon returned a DASH stream. iPhone only plays HLS or plain files. Try a different quality setting.")
+            throw AddonError.unsupported("The addon only offered a DASH stream, which iPhone can't play. Try a lower quality in the addon's settings.")
         }
         if let codec = response.codec?.lowercased(), ["opus", "vorbis"].contains(codec),
            (response.container?.lowercased() ?? "ogg") == "ogg" {
-            throw AddonError.unsupported("This addon returned \(codec.capitalized) in Ogg, which iPhone can't play. Try a different quality setting.")
+            throw AddonError.unsupported("The addon returned \(codec.capitalized) in Ogg, which iPhone can't play.")
         }
         return response.toStreamInfo(streamURL)
     }
@@ -247,10 +286,19 @@ enum AddonClient {
             if status == 404 { throw AddonError.notFound }
             guard (200..<300).contains(status) else {
                 if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    // Prefer the human sentence ("message") over a code ("error": "missing").
+                    let message = (obj["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    if status == 401 || status == 403 {
+                        throw AddonError.unauthorized((message ?? "The addon refused the request (HTTP \(status)).") + " Halo can't use this addon.")
+                    }
+                    if let message { throw AddonError.addonMessage(message) }
                     if let message = obj["error"] as? String { throw AddonError.addonMessage(message) }
                     if let notice = obj["notice"] as? [String: Any], let message = notice["message"] as? String {
                         throw AddonError.addonMessage(message)
                     }
+                }
+                if status == 401 || status == 403 {
+                    throw AddonError.unauthorized("The addon refused the request (HTTP \(status)). It may need its own app or a login.")
                 }
                 throw AddonError.badStatus(status)
             }

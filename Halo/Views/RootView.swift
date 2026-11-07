@@ -61,6 +61,7 @@ struct RootView: View {
             nav.dismissPlayer = { [weak model] in model?.isNowPlayingPresented = false }
         }
         .task {
+            await addons.refreshAllManifests()
             await spotify.refreshHome()
         }
     }

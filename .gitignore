@@ -5,3 +5,5 @@ Payload/
 build.log
 Halo/Info.plist
 .DS_Store
+build-test/
+test.log

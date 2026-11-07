@@ -146,6 +146,8 @@ struct AddonManifest: Codable, Hashable, Sendable {
     var settings: [AddonSetting]
     var catalogs: [AddonCatalog]
     var allowDownloads: JSONScalar?
+    /// Set when the addon only answers one specific app (e.g. `bitchordAuth: true` needs BitChord's signed device token).
+    var lockedToApp: String?
 
     func supports(_ resource: String) -> Bool {
         resources.contains { $0.caseInsensitiveCompare(resource) == .orderedSame }
@@ -156,6 +158,7 @@ struct AddonManifest: Codable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, version, description, icon, logo, resources, types, contentType, settings, catalogs, allowDownloads
+        case bitchordAuth, lockedToApp
     }
 
     init(from decoder: Decoder) throws {
@@ -178,6 +181,11 @@ struct AddonManifest: Codable, Hashable, Sendable {
         let rawCatalogs = (try? c.decodeIfPresent([FailableDecodable<AddonCatalog>].self, forKey: .catalogs)) ?? []
         catalogs = rawCatalogs.compactMap(\.value)
         allowDownloads = try? c.decodeIfPresent(JSONScalar.self, forKey: .allowDownloads)
+        if let locked = try? c.decodeIfPresent(String.self, forKey: .lockedToApp) {
+            lockedToApp = locked
+        } else if (try? c.decodeIfPresent(JSONScalar.self, forKey: .bitchordAuth))?.flag == true {
+            lockedToApp = "BitChord"
+        }
     }
 
     private static func url(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> URL? {
@@ -198,6 +206,7 @@ struct AddonManifest: Codable, Hashable, Sendable {
         try c.encode(settings, forKey: .settings)
         try c.encode(catalogs, forKey: .catalogs)
         try c.encodeIfPresent(allowDownloads, forKey: .allowDownloads)
+        try c.encodeIfPresent(lockedToApp, forKey: .lockedToApp)
     }
 }
 

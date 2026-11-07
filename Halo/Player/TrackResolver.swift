@@ -10,6 +10,8 @@ final class TrackResolver {
     weak var addons: AddonStore?
 
     private var matches: [String: Track] = [:]
+    /// Addons that refused Halo this session (401/403), so we don't ask them for every song.
+    private(set) var refused: [String: String] = [:]
     private let file = "matches.json"
 
     init() {
@@ -55,8 +57,11 @@ final class TrackResolver {
         }
 
         // 3. Every other enabled addon, in the user's order.
+        for (id, why) in refused where addons.addon(withID: id) != nil {
+            attempts.append("\(addons.addon(withID: id)?.displayName ?? id): \(why)")
+        }
         let candidates = addons.enabled.filter {
-            !excluding.contains($0.id) && $0.id != track.addonID
+            !excluding.contains($0.id) && $0.id != track.addonID && refused[$0.id] == nil
                 && ($0.manifest.supports("search") || $0.manifest.supports("resolve") || $0.manifest.supports("isrc"))
         }
         if candidates.isEmpty && attempts.isEmpty { throw PlayerError.noAddons }
@@ -77,6 +82,9 @@ final class TrackResolver {
                 return (info, playable)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch AddonError.unauthorized(let why) {
+                refused[addon.id] = why
+                attempts.append("\(addon.displayName): \(why)")
             } catch {
                 attempts.append("\(addon.displayName): \(error.localizedDescription)")
             }

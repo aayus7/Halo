@@ -24,10 +24,24 @@ final class AddonStore {
         monitor.start(queue: DispatchQueue(label: "halo.network"))
     }
 
-    var enabled: [InstalledAddon] { addons.filter(\.enabled) }
+    /// Enabled and usable by Halo (addons locked to another app are left out).
+    var enabled: [InstalledAddon] { addons.filter { $0.enabled && $0.manifest.lockedToApp == nil } }
 
     var enabledSearchAddons: [InstalledAddon] {
-        addons.filter { $0.enabled && $0.manifest.supports("search") }
+        enabled.filter { $0.manifest.supports("search") }
+    }
+
+    /// Re-reads every manifest quietly (new settings, catalogs, and app locks show up without reinstalling).
+    func refreshAllManifests() async {
+        for addon in addons {
+            guard let normalized = try? AddonClient.normalize(addon.baseURL.absoluteString),
+                  let response = try? await AddonClient.session.data(from: normalized.manifest),
+                  let manifest = try? JSONDecoder().decode(AddonManifest.self, from: response.0),
+                  manifest.id == addon.id,
+                  let i = addons.firstIndex(where: { $0.id == addon.id }) else { continue }
+            addons[i].manifest = manifest
+        }
+        Store.save(addons, to: fileName)
     }
 
     func addon(withID id: String) -> InstalledAddon? {

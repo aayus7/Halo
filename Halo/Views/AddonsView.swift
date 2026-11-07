@@ -125,7 +125,9 @@ private struct AddonRow: View {
                 Text(detailLine).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if !addon.enabled {
+            if addon.manifest.lockedToApp != nil {
+                Image(systemName: "lock.fill").foregroundStyle(.orange)
+            } else if !addon.enabled {
                 Text("Off").font(.caption.weight(.bold)).foregroundStyle(.secondary)
             }
         }
@@ -155,6 +157,12 @@ struct AddonDetailView: View {
                     }
                     if let d = addon.manifest.description, !d.isEmpty {
                         Text(d).font(.callout).foregroundStyle(.secondary)
+                    }
+                    if let app = addon.manifest.lockedToApp {
+                        Label("This addon only answers the \(app) app (it requires \(app)'s signed login), so Halo can't use it. Remove it, or ask its author for an Eclipse-compatible link.",
+                              systemImage: "lock.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
                     }
                     Toggle("Enabled", isOn: Binding(get: { addon.enabled }, set: { addons.setEnabled(addon.id, $0) }))
                     TextField("Display name", text: Binding(get: { addon.customName ?? "" }, set: { addons.rename(addon.id, to: $0) }),

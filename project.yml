@@ -13,6 +13,9 @@ targets:
   Halo:
     type: application
     platform: iOS
+    scheme:
+      testTargets:
+        - HaloTests
     sources:
       - path: Halo
     settings:
@@ -41,3 +44,17 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+
+  HaloTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: HaloTests
+    dependencies:
+      - target: Halo
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.aa.halo.tests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Halo.app/Halo
+        BUNDLE_LOADER: $(TEST_HOST)

@@ -125,6 +125,13 @@ final class PlayerEngine {
     @ObservationIgnored private var lastTickAt = Date()
     /// Addons whose stream failed to play for a track, so the chain skips them for a while.
     @ObservationIgnored private var failedAddons: [String: Set<String>] = [:]
+    /// Whether the current load came from the user (tap, next, previous) or from auto-advance.
+    @ObservationIgnored private var userInitiatedLoad = true
+
+    /// After a song fails: skip on only while auto-advancing, and never more than twice in a row.
+    nonisolated static func shouldSkipAfterFailure(userInitiated: Bool, consecutiveFailures: Int, hasNext: Bool) -> Bool {
+        hasNext && !userInitiated && consecutiveFailures < 3
+    }
 
     /// The playhead at `date`, interpolated between the 4 Hz ticks (for lyrics).
     func time(at date: Date) -> Double {
@@ -148,6 +155,7 @@ final class PlayerEngine {
         originalQueue = tracks
         queueTitle = title
         failedAddons = [:]
+        userInitiatedLoad = true
         if shuffleEnabled {
             var rest = tracks
             let first = rest.remove(at: index)
@@ -184,6 +192,8 @@ final class PlayerEngine {
 
     func jumpToUpNext(_ offset: Int) {
         guard let i = currentIndex, queue.indices.contains(i + 1 + offset) else { return }
+        userInitiatedLoad = true
+        consecutiveFailures = 0
         currentIndex = i + 1 + offset
         loadCurrent(autoplay: true)
     }
@@ -241,6 +251,8 @@ final class PlayerEngine {
         if currentTime > 3 || i == 0 {
             seek(to: 0)
         } else {
+            userInitiatedLoad = true
+            consecutiveFailures = 0
             currentIndex = i - 1
             loadCurrent(autoplay: true)
         }
@@ -456,9 +468,8 @@ final class PlayerEngine {
         consecutiveFailures += 1
         resolvedCache[track.id] = nil
         NoticeCenter.shared.show(error.localizedDescription, title: "Couldn't play “\(track.title)”", level: .error)
-        // Skip ahead, but don't spin forever if everything fails.
-        if consecutiveFailures < min(queue.count, 5), let i = currentIndex,
-           i + 1 < queue.count || repeatMode == .all {
+        let hasNext = nextIndex != nil
+        if Self.shouldSkipAfterFailure(userInitiated: userInitiatedLoad, consecutiveFailures: consecutiveFailures, hasNext: hasNext) {
             let generation = loadGeneration
             Task {
                 try? await Task.sleep(for: .seconds(1.2))
@@ -466,6 +477,8 @@ final class PlayerEngine {
                 advance(automatic: true)
             }
         } else {
+            // Stop here and leave the error on screen instead of hopping through the queue.
+            active.player.pause()
             isPlaying = false
             updateNowPlaying()
         }
@@ -481,6 +494,8 @@ final class PlayerEngine {
 
     private func advance(automatic: Bool) {
         guard let i = currentIndex else { return }
+        userInitiatedLoad = !automatic
+        if !automatic { consecutiveFailures = 0 }
         if automatic, sleepAtEndOfTrack {
             sleepAtEndOfTrack = false
             active.player.pause()
@@ -710,7 +725,6 @@ final class PlayerEngine {
                     self.handleFailure(track: track, error: NSError(
                         domain: "Halo", code: 1, userInfo: [NSLocalizedDescriptionKey: message]))
                 } else if status == .readyToPlay {
-                    self.consecutiveFailures = 0
                     self.isLoading = false
                 }
             }
@@ -721,6 +735,7 @@ final class PlayerEngine {
         let t = time.seconds
         if t.isFinite { currentTime = t }
         lastTickAt = Date()
+        if currentTime > 2, isPlaying { consecutiveFailures = 0 }
         if let item = active.item {
             let d = item.duration.seconds
             if d.isFinite, d > 0, abs(d - duration) > 0.5 {

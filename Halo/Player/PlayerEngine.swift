@@ -14,7 +14,8 @@ enum PlayerError: LocalizedError {
         case .addonMissing: return "The addon for this track isn't installed or enabled."
         case .noAddons: return "Install an addon to play streamed songs."
         case .noMatch(let title, let why):
-            return "None of your addons has “\(title)”." + (why.map { " (\($0))" } ?? "")
+            guard let why else { return "None of your addons has “\(title)”." }
+            return "No addon could play “\(title)”. \(why)"
         }
     }
 }
@@ -91,6 +92,21 @@ final class PlayerEngine {
     var contentType: AddonManifest.ContentType {
         guard let id = (playingAs ?? currentTrack)?.addonID else { return .music }
         return addons?.addon(withID: id)?.manifest.contentType ?? .music
+    }
+
+    /// Bitrate from the player's access log (streams), in bits per second.
+    var accessLogBitrate: Double? {
+        guard let event = active.item?.accessLog()?.events.last else { return nil }
+        let b = event.indicatedBitrate > 0 ? event.indicatedBitrate : event.observedBitrate
+        return b > 0 ? b : nil
+    }
+
+    /// Name of where the current song is coming from.
+    var sourceName: String {
+        guard let t = playingAs ?? currentTrack else { return "—" }
+        if t.isLocal { return "On This iPhone" }
+        if let id = t.addonID { return addons?.addon(withID: id)?.displayName ?? id }
+        return "—"
     }
 
     var currentChapter: Chapter? {

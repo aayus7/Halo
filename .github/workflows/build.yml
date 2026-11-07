@@ -10,55 +10,30 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FAST_FLAGS: >-
+    COMPILER_INDEX_STORE_ENABLE=NO
+    DEBUG_INFORMATION_FORMAT=dwarf
+    ONLY_ACTIVE_ARCH=YES
+
 jobs:
-  build:
+  # The IPA job and the test job run side by side, so the IPA is ready in a few minutes.
+  ipa:
+    name: IPA
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+      - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
 
-      - name: Toolchain
-        run: |
-          xcodebuild -version
-          swift --version
-          xcodebuild -showsdks | grep -i iphoneos
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
       - name: Generate project
-        run: xcodegen generate
-
-      - name: Test on iOS Simulator
         run: |
-          set -o pipefail
-          UDID=$(xcrun simctl list devices available -j | python3 -c "
-          import json, sys
-          d = json.load(sys.stdin)['devices']
-          c = [(k, x) for k, v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')]
-          c.sort(key=lambda kx: kx[0])
-          print(c[-1][1]['udid'])")
-          echo "Simulator: $UDID"
-          xcodebuild test \
-            -project Halo.xcodeproj \
-            -scheme Halo \
-            -destination "id=$UDID" \
-            -derivedDataPath build-test \
-            2>&1 | tee test.log | grep -E "Test Case .*(passed|failed)|error:|XCTAssert|Executed|\*\* TEST" || true
-          grep -q "\*\* TEST SUCCEEDED \*\*" test.log
-
-      - name: Upload test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-log
-          path: test.log
-          if-no-files-found: ignore
+          curl -sSL https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip -o xcodegen.zip
+          unzip -q xcodegen.zip -d xg
+          ./xg/xcodegen/bin/xcodegen generate
 
       - name: Build
         run: |
@@ -73,7 +48,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee build.log
+            $FAST_FLAGS \
+            build 2>&1 | tee build.log | grep -E "error:|\*\* BUILD" || true
+          grep -q "\*\* BUILD SUCCEEDED \*\*" build.log
 
       - name: Show compiler errors
         if: failure()
@@ -101,3 +78,57 @@ jobs:
         with:
           name: build-log
           path: build.log
+
+  tests:
+    name: Tests
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Boot simulator (in the background)
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['devices']
+          c = [(k, x) for k, v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')]
+          c.sort(key=lambda kx: kx[0])
+          print(c[-1][1]['udid'])")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" &
+
+      - name: Generate project
+        run: |
+          curl -sSL https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip -o xcodegen.zip
+          unzip -q xcodegen.zip -d xg
+          ./xg/xcodegen/bin/xcodegen generate
+
+      - name: Build for testing
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project Halo.xcodeproj -scheme Halo \
+            -destination "id=$UDID" -derivedDataPath build-test \
+            $FAST_FLAGS 2>&1 | tee test.log | grep -E "error:|\*\* TEST BUILD" || true
+          grep -q "\*\* TEST BUILD SUCCEEDED \*\*" test.log
+
+      - name: Run tests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project Halo.xcodeproj -scheme Halo \
+            -destination "id=$UDID" -derivedDataPath build-test \
+            2>&1 | tee -a test.log | grep -E "Test Case .*(passed|failed)|error:|Executed|\*\* TEST" || true
+          grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*\|\*\* TEST SUCCEEDED \*\*" test.log
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
+          if-no-files-found: ignore

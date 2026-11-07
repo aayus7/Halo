@@ -32,6 +32,31 @@ final class DSPParameters: @unchecked Sendable {
     }
 }
 
+/// What the render thread saw, for the Audio Pipeline screen.
+final class DSPStats: @unchecked Sendable {
+    struct Snapshot: Sendable {
+        var sampleRate: Double = 0
+        var channels: Int = 0
+        var isFloat = false
+        var interleaved = false
+        var bitsPerChannel: Int = 0
+        var rmsDB: Double = -120
+        var peakDB: Double = -120
+        var gainDB: Double = 0
+        var processing = false
+        var updatedAt: Double = 0
+    }
+
+    static let shared = DSPStats()
+    private let lock = OSAllocatedUnfairLock(initialState: Snapshot())
+
+    func update(_ change: @Sendable (inout Snapshot) -> Void) {
+        lock.withLockIfAvailable { change(&$0) }
+    }
+
+    var snapshot: Snapshot { lock.withLock { $0 } }
+}
+
 /// RBJ-cookbook biquad, direct form I, per channel.
 struct Biquad {
     var b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0
@@ -101,6 +126,39 @@ final class TapContext {
         isInterleaved = format.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
         version = -1
         filters = []
+        let (rate, ch, float, inter, bits) = (sampleRate, channels, isFloat, isInterleaved, Int(format.mBitsPerChannel))
+        DSPStats.shared.update {
+            $0.sampleRate = rate; $0.channels = ch; $0.isFloat = float; $0.interleaved = inter; $0.bitsPerChannel = bits
+        }
+    }
+
+    private var smoothedPower = 0.0
+
+    /// Short-term RMS and peak of what leaves the tap, published a few times a second.
+    private func measure(_ buffers: UnsafeMutableAudioBufferListPointer, frames: Int) {
+        var sum = 0.0, peak: Float = 0, count = 0
+        for buffer in buffers {
+            guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let n = isInterleaved ? frames * max(1, Int(buffer.mNumberChannels)) : frames
+            var i = 0
+            while i < n {
+                let v = data[i]
+                sum += Double(v * v)
+                peak = max(peak, abs(v))
+                i += 2
+                count += 1
+            }
+        }
+        guard count > 0 else { return }
+        smoothedPower = smoothedPower * 0.8 + (sum / Double(count)) * 0.2
+        let rms = 10 * log10(max(smoothedPower, 1e-12))
+        let peakDB = 20 * log10(Double(max(peak, 1e-6)))
+        let gain = active ? 20 * log10(max(linearPreamp, 1e-6)) : 0
+        let on = active
+        DSPStats.shared.update {
+            $0.rmsDB = rms; $0.peakDB = peakDB; $0.gainDB = gain; $0.processing = on
+            $0.updatedAt = Date().timeIntervalSinceReferenceDate
+        }
     }
 
     private func rebuild() {
@@ -128,8 +186,10 @@ final class TapContext {
             version = ver
             rebuild()
         }
-        guard active, isFloat, frames > 0, !filters.isEmpty else { return }
+        guard isFloat, frames > 0 else { return }
         let buffers = UnsafeMutableAudioBufferListPointer(list)
+        defer { measure(buffers, frames: frames) }
+        guard active, !filters.isEmpty else { return }
 
         if isInterleaved {
             guard let buffer = buffers.first, let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { return }

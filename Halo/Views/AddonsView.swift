@@ -143,6 +143,8 @@ struct AddonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editingCellular = false
     @State private var refreshing = false
+    @State private var testing = false
+    @State private var testResult: String?
 
     var body: some View {
         if let addon = addons.addon(withID: addonID) {
@@ -200,6 +202,21 @@ struct AddonDetailView: View {
                 }
 
                 Section {
+                    Button {
+                        testing = true
+                        testResult = nil
+                        Task {
+                            testResult = await AddonClient.diagnose(addons.context(for: addon))
+                            testing = false
+                        }
+                    } label: {
+                        HStack { Text("Test Connection"); if testing { Spacer(); ProgressView() } }
+                    }
+                    if let testResult {
+                        Text(testResult).font(.footnote.monospaced())
+                            .foregroundStyle(testResult.hasPrefix("Working") ? .green : .orange)
+                            .textSelection(.enabled)
+                    }
                     Button {
                         refreshing = true
                         Task {

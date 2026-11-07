@@ -289,7 +289,8 @@ enum AddonClient {
                     // Prefer the human sentence ("message") over a code ("error": "missing").
                     let message = (obj["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                     if status == 401 || status == 403 {
-                        throw AddonError.unauthorized((message ?? "The addon refused the request (HTTP \(status)).") + " Halo can't use this addon.")
+                        let said = message ?? (obj["error"] as? String)
+                        throw AddonError.unauthorized(Self.refusal(status: status, said: said))
                     }
                     if let message { throw AddonError.addonMessage(message) }
                     if let message = obj["error"] as? String { throw AddonError.addonMessage(message) }
@@ -298,7 +299,7 @@ enum AddonClient {
                     }
                 }
                 if status == 401 || status == 403 {
-                    throw AddonError.unauthorized("The addon refused the request (HTTP \(status)). It may need its own app or a login.")
+                    throw AddonError.unauthorized(Self.refusal(status: status, said: nil))
                 }
                 throw AddonError.badStatus(status)
             }
@@ -307,6 +308,35 @@ enum AddonClient {
             } catch {
                 throw AddonError.invalidResponse(what)
             }
+        }
+    }
+
+    /// Explains a 401/403 in plain words. The addon's server refused us, so say what it said.
+    static func refusal(status: Int, said: String?) -> String {
+        let quote = said.map { "said “\($0)”" } ?? "refused the request"
+        if let said, said.localizedCaseInsensitiveContains("only works in") {
+            return "The addon \(quote). Halo can't use it."
+        }
+        return "The addon's server \(quote) (HTTP \(status)). Its link may be disabled, expired or over its limit. Generate a new link on the addon's site."
+    }
+
+    /// Settings › Addons › Test connection: one search, and what came back.
+    static func diagnose(_ ctx: AddonContext) async -> String {
+        guard let url = endpoint(base: ctx.addon.baseURL, segments: ["search"], params: ctx.params.merging(["q": "test"]) { $1 }) else {
+            return "Invalid addon URL."
+        }
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let body = String(data: data.prefix(300), encoding: .utf8) ?? "(binary)"
+            if (200..<300).contains(status), let r = try? JSONDecoder().decode(SearchResponse.self, from: data) {
+                return "Working: search returned \(r.tracks.count) songs, \(r.albums.count) albums, \(r.artists.count) artists."
+            }
+            return "HTTP \(status): \(body)"
+        } catch {
+            return "Couldn't reach it: \(error.localizedDescription)"
         }
     }
 

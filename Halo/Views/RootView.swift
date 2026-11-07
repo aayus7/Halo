@@ -27,6 +27,7 @@ struct RootView: View {
     @Environment(NavigationModel.self) private var nav
     @Environment(AddonStore.self) private var addons
     @Environment(SpotifyService.self) private var spotify
+    @Namespace private var playerTransition
 
     var body: some View {
         @Bindable var navModel = nav
@@ -51,9 +52,12 @@ struct RootView: View {
         .tabBarMinimizeBehavior(.onScrollDown)
         .tabViewBottomAccessory {
             MiniPlayerView()
+                .matchedTransitionSource(id: "nowPlaying", in: playerTransition)
         }
         .fullScreenCover(isPresented: $engine.isNowPlayingPresented) {
+            // Zoom out of the mini player; swiping down shrinks it back in, interactively.
             NowPlayingView()
+                .navigationTransition(.zoom(sourceID: "nowPlaying", in: playerTransition))
         }
         .overlay(alignment: .top) { ToastOverlay() }
         .onAppear {

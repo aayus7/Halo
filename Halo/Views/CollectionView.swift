@@ -10,6 +10,7 @@ struct CollectionView: View {
         case history
         case spotifyLiked
         case local
+        case custom(title: String, subtitle: String, tracks: [Track])
     }
 
     let source: Source
@@ -100,6 +101,7 @@ struct CollectionView: View {
         case .liked: return library.liked
         case .history: return library.history
         case .local: return library.localTracks
+        case .custom(_, _, let tracks): return tracks
         default: return loadedTracks
         }
     }
@@ -113,6 +115,7 @@ struct CollectionView: View {
         case .history: return "Recently Played"
         case .spotifyLiked: return "Liked Songs"
         case .local: return "On This iPhone"
+        case .custom(let title, _, _): return title
         }
     }
 
@@ -127,6 +130,7 @@ struct CollectionView: View {
         case .history: return "Your listening"
         case .spotifyLiked: return "From Spotify"
         case .local: return "Files in Halo's Music folder"
+        case .custom(_, let subtitle, _): return subtitle
         }
     }
 
@@ -140,7 +144,7 @@ struct CollectionView: View {
 
     private var coverIcon: String? {
         switch source {
-        case .liked, .spotifyLiked: return "heart.fill"
+        case .liked, .spotifyLiked, .custom: return "heart.fill"
         case .history: return "clock.fill"
         case .local: return "iphone"
         default: return nil
@@ -288,105 +292,6 @@ struct CollectionView: View {
                 .foregroundStyle(.secondary)
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-struct ArtistView: View {
-    let artist: Artist
-
-    @Environment(PlayerEngine.self) private var player
-    @Environment(AddonStore.self) private var addons
-    @Environment(SpotifyService.self) private var spotify
-
-    @State private var info: Artist?
-    @State private var top: [Track] = []
-    @State private var albums: [Album] = []
-    @State private var isLoading = true
-    @State private var palette = Palette.fallback
-
-    var body: some View {
-        let shown = info ?? artist
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                GeometryReader { geo in
-                    let minY = geo.frame(in: .scrollView).minY
-                    ZStack(alignment: .bottomLeading) {
-                        ArtworkView(track: nil, url: shown.artworkURL, size: geo.size.width, cornerRadius: 0, pixelSize: 1000) { image in
-                            palette = PaletteExtractor.palette(for: image, key: shown.artworkURL?.absoluteString ?? shown.id)
-                        }
-                        .frame(width: geo.size.width, height: geo.size.height + max(minY, 0))
-                        .clipped()
-                        .offset(y: -max(minY, 0))
-                        LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .center, endPoint: .bottom)
-                        Text(shown.name)
-                            .font(.black(44))
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.6)
-                            .padding(20)
-                    }
-                }
-                .frame(height: 380)
-
-                HStack {
-                    if !shown.genres.isEmpty {
-                        Text(shown.genres.prefix(3).map(\.capitalized).joined(separator: " · "))
-                            .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    GlassIconButton(systemImage: "shuffle", size: 46) { player.playShuffled(top, title: shown.name) }
-                    GlassIconButton(systemImage: "play.fill", size: 54, tint: Theme.accent) {
-                        if !top.isEmpty { player.play(top, startAt: 0, title: shown.name) }
-                    }
-                }
-                .padding(.horizontal, 20)
-                .disabled(top.isEmpty)
-
-                if isLoading {
-                    ProgressView().frame(maxWidth: .infinity)
-                }
-                if !top.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        SectionHeader(title: "Popular")
-                        ForEach(Array(top.prefix(10).enumerated()), id: \.offset) { index, track in
-                            TrackRow(track: track)
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 4)
-                                .onTapGesture { player.play(top, startAt: index, title: shown.name) }
-                        }
-                    }
-                }
-                if !albums.isEmpty { AlbumShelf(title: "Albums", albums: albums) }
-                if let bio = shown.bio, !bio.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        SectionHeader(title: "About")
-                        Text(bio).font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20)
-                    }
-                }
-            }
-            .padding(.bottom, 40)
-        }
-        .background {
-            LinearGradient(colors: [palette.primary.opacity(0.6), .black, .black], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
-        }
-        .ignoresSafeArea(edges: .top)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
-    }
-
-    private func load() async {
-        defer { isLoading = false }
-        if artist.addonID == SpotifyService.sourceID {
-            let (a, t, al) = await spotify.artistDetail(artist)
-            info = a; top = t; albums = al
-        } else if let ctx = addons.context(forID: artist.addonID) {
-            if let r = try? await AddonClient.artist(ctx, id: artist.artistID) {
-                info = r.0; top = r.1; albums = r.2
-            } else if let r = try? await AddonClient.search(ctx, query: artist.name) {
-                // No /artist endpoint: fall back to a search.
-                top = r.tracks.filter { $0.artist.localizedCaseInsensitiveContains(artist.name) }
-                albums = r.albums.filter { $0.artist.localizedCaseInsensitiveContains(artist.name) }
-            }
         }
     }
 }

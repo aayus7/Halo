@@ -213,6 +213,40 @@ final class SpotifyService {
         Store.save(home, to: "spotify-home.json")
     }
 
+    // MARK: Search (Spotify is the metadata source; addons only play)
+
+    func search(_ query: String) async throws -> AddonSearchResult {
+        var comps = URLComponents(string: "https://api.spotify.com/v1/search")!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "type", value: "track,artist,album,playlist"),
+            URLQueryItem(name: "limit", value: "10"),
+        ]
+        let j = try await get(comps.url!.absoluteString)
+        func items(_ key: String) -> [[String: Any]] {
+            ((j[key] as? [String: Any])?["items"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []
+        }
+        return AddonSearchResult(
+            tracks: items("tracks").compactMap { Self.track($0) },
+            albums: items("albums").compactMap { Self.album($0) },
+            artists: items("artists").compactMap(Self.artist),
+            playlists: items("playlists").compactMap(Self.playlist)
+        )
+    }
+
+    /// An artist's most popular songs, via search (top-tracks is often unavailable to developer apps).
+    private func popular(_ artist: Artist) async -> [Track] {
+        var comps = URLComponents(string: "https://api.spotify.com/v1/search")!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: "artist:\"\(artist.name)\""),
+            URLQueryItem(name: "type", value: "track"),
+            URLQueryItem(name: "limit", value: "10"),
+        ]
+        guard let j = try? await get(comps.url!.absoluteString) else { return [] }
+        let rows = ((j["tracks"] as? [String: Any])?["items"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []
+        return rows.compactMap { Self.track($0) }.filter { $0.artistID == artist.artistID || $0.artist.localizedCaseInsensitiveContains(artist.name) }
+    }
+
     // MARK: Details
 
     func playlistTracks(_ id: String) async throws -> [Track] {
@@ -273,6 +307,7 @@ final class SpotifyService {
         if let j = try? await get("/artists/\(artist.artistID)/albums?include_groups=album,single&limit=30") {
             albums = ((j["items"] as? [[String: Any]]) ?? []).compactMap { Self.album($0) }
         }
+        if top.isEmpty { top = await popular(artist) }
         if top.isEmpty {
             // Endpoint unavailable: fall back to this artist's songs among the user's own.
             let mine = home.topTracks + home.liked + home.recent
@@ -315,7 +350,8 @@ final class SpotifyService {
     static func artist(_ j: [String: Any]) -> Artist? {
         guard let id = j["id"] as? String, let name = j["name"] as? String else { return nil }
         return Artist(addonID: sourceID, artistID: id, name: name, artworkURL: image(j["images"]),
-                      genres: (j["genres"] as? [String]) ?? [], bio: nil)
+                      genres: (j["genres"] as? [String]) ?? [], bio: nil,
+                      followers: (j["followers"] as? [String: Any])?["total"] as? Int)
     }
 
     static func playlist(_ j: [String: Any]) -> RemotePlaylist? {

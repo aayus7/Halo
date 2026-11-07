@@ -137,6 +137,7 @@ struct Artist: Identifiable, Codable, Hashable, Sendable {
     var artworkURL: URL?
     var genres: [String] = []
     var bio: String?
+    var followers: Int?
 }
 
 struct RemotePlaylist: Identifiable, Codable, Hashable, Sendable {

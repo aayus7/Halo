@@ -12,8 +12,10 @@ struct NowPlayingView: View {
     @State private var mode: Mode = .artwork
     @State private var palette = Palette.fallback
     @State private var motionURL: URL?
-    @State private var dragOffset: CGFloat = 0
     @State private var showEffects = false
+    @State private var artwork: UIImage?
+    @State private var backdrop: UIImage?
+    @State private var drift = false
 
     var body: some View {
         let track = player.currentTrack
@@ -53,66 +55,76 @@ struct NowPlayingView: View {
             }
             .ignoresSafeArea()
         }
-        .offset(y: dragOffset)
-        .gesture(
-            DragGesture(minimumDistance: 18)
-                .onChanged { value in
-                    if value.translation.height > 0, abs(value.translation.height) > abs(value.translation.width) {
-                        dragOffset = value.translation.height
-                    }
-                }
-                .onEnded { value in
-                    if value.translation.height > 140 || value.predictedEndTranslation.height > 400 {
-                        dismiss()
-                    } else {
-                        withAnimation(.spring(duration: 0.3)) { dragOffset = 0 }
-                    }
-                }
-        )
         .preferredColorScheme(.dark)
         .statusBarHidden(false)
         .sheet(isPresented: $showEffects) { SoundSheet() }
+        .task(id: track?.id) { await loadArtwork(track) }
         .task(id: track?.id) { await loadMotion(track) }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 16).repeatForever(autoreverses: true)) { drift = true }
+        }
     }
 
     // MARK: Background
 
+    /// The artwork at the top, melting into a blurred, colour-rich copy of itself that fills the screen.
     @ViewBuilder
     private func background(_ track: Track?, width: CGFloat) -> some View {
-        ZStack(alignment: .top) {
-            LinearGradient(colors: [palette.primary, palette.secondary, .black], startPoint: .top, endPoint: .bottom)
-            ZStack {
-                ArtworkView(track: track, size: width, cornerRadius: 0, pixelSize: 1400) { image in
-                    let key = track?.id ?? ""
-                    let p = PaletteExtractor.palette(for: image, key: key)
-                    withAnimation(.easeInOut(duration: 0.6)) { palette = p }
-                }
-                if let motionURL {
-                    MotionArtworkView(url: motionURL)
-                        .frame(width: width, height: width)
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                Color.black
+                if let backdrop {
+                    Image(uiImage: backdrop)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .scaleEffect(drift ? 1.45 : 1.25)
+                        .offset(x: drift ? 24 : -24, y: drift ? -30 : 20)
+                        .rotationEffect(.degrees(drift ? 4 : -4))
+                        .clipped()
                         .transition(.opacity)
+                } else {
+                    LinearGradient(colors: [palette.primary, palette.secondary, .black], startPoint: .top, endPoint: .bottom)
                 }
-            }
-            .frame(width: width, height: width)
-            .mask {
-                LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.72),
-                                       .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom)
-            }
-            .opacity(mode == .artwork ? 1 : 0)
-            .scaleEffect(mode == .artwork ? 1 : 1.1, anchor: .top)
-            .blur(radius: mode == .artwork ? 0 : 30)
+                // Keep the controls readable.
+                LinearGradient(colors: [.black.opacity(0.05), .black.opacity(0.25), .black.opacity(0.55)],
+                               startPoint: .top, endPoint: .bottom)
 
-            if mode != .artwork {
-                ArtworkView(track: track, size: width * 1.4, cornerRadius: 0, pixelSize: 400)
-                    .blur(radius: 80)
-                    .opacity(0.55)
-                    .offset(y: -width * 0.2)
-                    .allowsHitTesting(false)
+                ZStack {
+                    if let artwork {
+                        Image(uiImage: artwork).resizable().scaledToFill()
+                    } else {
+                        ArtworkPlaceholder(seed: track?.title ?? "", size: width)
+                    }
+                    if let motionURL {
+                        MotionArtworkView(url: motionURL).transition(.opacity)
+                    }
+                }
+                .frame(width: width, height: width)
+                .clipped()
+                .mask {
+                    LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.62),
+                                           .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom)
+                }
+                .opacity(mode == .artwork ? 1 : 0)
+                .scaleEffect(mode == .artwork ? 1 : 1.08, anchor: .top)
             }
-            LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .center, endPoint: .bottom)
         }
         .animation(.easeInOut(duration: 0.45), value: mode)
+        .animation(.easeInOut(duration: 0.6), value: backdrop)
         .ignoresSafeArea()
+    }
+
+    private func loadArtwork(_ track: Track?) async {
+        guard let track else { return }
+        guard let image = await ArtworkLoader.image(for: track, hiRes: settings.hiResArtwork, size: 1400),
+              !Task.isCancelled else { return }
+        artwork = image
+        let p = PaletteExtractor.palette(for: image, key: track.id)
+        withAnimation(.easeInOut(duration: 0.6)) { palette = p }
+        let blurred = await Task.detached(priority: .userInitiated) { Backdrop.make(from: image) }.value
+        guard !Task.isCancelled, player.currentTrack?.id == track.id else { return }
+        backdrop = blurred
     }
 
     // MARK: Pieces
@@ -337,8 +349,10 @@ struct Scrubber: View {
                 Spacer()
                 if let chapter = player.currentChapter {
                     Text(chapter.title).lineLimit(1)
-                    Spacer()
+                } else {
+                    QualityBadgeButton()
                 }
+                Spacer()
                 Text("-" + formatTime(max(player.duration - shown, 0)))
             }
             .font(.system(size: 13, weight: .bold).monospacedDigit())

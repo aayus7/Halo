@@ -4,6 +4,7 @@ struct SearchView: View {
     @Environment(AddonStore.self) private var addons
     @Environment(LibraryStore.self) private var library
     @Environment(PlayerEngine.self) private var player
+    @Environment(SpotifyService.self) private var spotify
 
     struct SourceResult: Identifiable {
         let id: String
@@ -22,7 +23,7 @@ struct SearchView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
-                if addons.enabledSearchAddons.count > 1 { sourcePicker }
+                if !spotify.isConnected, addons.enabledSearchAddons.count > 1 { sourcePicker }
 
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     hint
@@ -81,7 +82,14 @@ struct SearchView: View {
     @ViewBuilder
     private var hint: some View {
         let count = addons.enabledSearchAddons.count
-        if count == 0 {
+        if spotify.isConnected {
+            ContentUnavailableView {
+                Label("Search", systemImage: "magnifyingglass")
+            } description: {
+                Text("Songs, artists, albums and playlists from Spotify. Playback comes from your addons.")
+            }
+            .padding(.top, 60)
+        } else if count == 0 {
             ContentUnavailableView {
                 Label("No search addons", systemImage: "puzzlepiece.extension")
             } description: {
@@ -152,6 +160,20 @@ struct SearchView: View {
     private func performSearch(_ q: String) async {
         isSearching = true
         localResults = library.search(q)
+        // With Spotify connected, it is the single metadata source; addons only play.
+        if spotify.isConnected {
+            results = []
+            do {
+                let r = try await spotify.search(q)
+                guard !Task.isCancelled else { return }
+                results = [SourceResult(id: "spotify", name: "Spotify", result: r)]
+            } catch {
+                guard !Task.isCancelled else { return }
+                results = [SourceResult(id: "spotify", name: "Spotify", result: AddonSearchResult(), error: error.localizedDescription)]
+            }
+            isSearching = false
+            return
+        }
         let targets = addons.enabledSearchAddons.map { addons.context(for: $0) }
         var collected: [SourceResult] = targets.map { SourceResult(id: $0.id, name: $0.addon.displayName, result: AddonSearchResult()) }
         results = []

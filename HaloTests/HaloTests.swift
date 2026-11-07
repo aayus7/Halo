@@ -259,4 +259,37 @@ final class MatchingTests: XCTestCase {
         XCTAssertFalse(flac.isEncrypted)
         XCTAssertEqual(flac.toStreamInfo(flac.url!).summary, "24-bit · 96 kHz")
     }
+
+    func testQualityBadge() {
+        let url = URL(string: "https://x/a")!
+        XCTAssertEqual(QualityBadge.label(stream: StreamInfo(url: url, codec: "flac", sampleRate: 44100, bitDepth: 16), track: nil), "Lossless")
+        XCTAssertEqual(QualityBadge.label(stream: StreamInfo(url: url, codec: "flac", sampleRate: 96000, bitDepth: 24), track: nil), "Hi-Res Lossless")
+        XCTAssertEqual(QualityBadge.label(stream: StreamInfo(url: url, codec: "aac"), track: nil), "AAC")
+    }
+
+    func testForbiddenMessageQuotesTheServer() {
+        let message = AddonClient.refusal(status: 403, said: "Unavailable")
+        XCTAssertTrue(message.contains("Unavailable"))
+        XCTAssertTrue(message.contains("403"))
+        XCTAssertTrue(AddonClient.refusal(status: 401, said: "This addon only works in the official BitChord app").contains("can't use it"))
+    }
+
+    @MainActor
+    func testSpotifyTrackParsing() {
+        let json: [String: Any] = [
+            "id": "abc", "name": "Slow Down", "type": "track", "duration_ms": 211000, "explicit": true,
+            "artists": [["id": "a1", "name": "Chase Atlantic"]],
+            "album": ["id": "al1", "name": "Paradise", "images": [["url": "https://i.scdn.co/image/x"]]],
+            "external_ids": ["isrc": "USUM71900001"],
+        ]
+        let t = SpotifyService.track(json)
+        XCTAssertEqual(t?.title, "Slow Down")
+        XCTAssertEqual(t?.artist, "Chase Atlantic")
+        XCTAssertEqual(t?.isrc, "USUM71900001")
+        XCTAssertEqual(t?.duration ?? 0, 211, accuracy: 0.01)
+        XCTAssertEqual(t?.albumID, "al1")
+        if case .catalog(let service, let id) = t?.source {
+            XCTAssertEqual(service, "spotify"); XCTAssertEqual(id, "abc")
+        } else { XCTFail("not a catalog track") }
+    }
 }

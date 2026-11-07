@@ -12,6 +12,7 @@ final class LibraryStore {
     private(set) var playCounts: [String: Int] = [:]
     private(set) var isImporting = false
     private(set) var playlists: [UserPlaylist] = []
+    private(set) var followedArtists: [Artist] = []
 
     @ObservationIgnored private var knownTracks: [String: Track] = [:]
 
@@ -20,6 +21,7 @@ final class LibraryStore {
         var history: [Track]
         var playCounts: [String: Int]
         var known: [Track]
+        var followed: [Artist]?
     }
 
     static let audioExtensions: Set<String> = [
@@ -32,6 +34,7 @@ final class LibraryStore {
             history = snap.history
             playCounts = snap.playCounts
             for t in snap.known { knownTracks[t.id] = t }
+            followedArtists = snap.followed ?? []
         }
         localTracks = Store.load([Track].self, from: "local.json") ?? []
         playlists = Store.load([UserPlaylist].self, from: "playlists.json") ?? []
@@ -49,6 +52,21 @@ final class LibraryStore {
             liked.remove(at: i)
         } else {
             liked.insert(track, at: 0)
+        }
+        save()
+    }
+
+    // MARK: Artists
+
+    func isFollowing(_ artist: Artist) -> Bool {
+        followedArtists.contains { $0.id == artist.id || $0.name.caseInsensitiveCompare(artist.name) == .orderedSame }
+    }
+
+    func toggleFollow(_ artist: Artist) {
+        if isFollowing(artist) {
+            followedArtists.removeAll { $0.id == artist.id || $0.name.caseInsensitiveCompare(artist.name) == .orderedSame }
+        } else {
+            followedArtists.insert(artist, at: 0)
         }
         save()
     }
@@ -240,7 +258,7 @@ final class LibraryStore {
 
     private func save() {
         let snap = Snapshot(liked: liked, history: history, playCounts: playCounts,
-                            known: Array(knownTracks.values))
+                            known: Array(knownTracks.values), followed: followedArtists)
         Store.save(snap, to: "library.json")
     }
 }

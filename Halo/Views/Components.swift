@@ -14,6 +14,7 @@ enum Route: Hashable {
     case local
     case settings
     case addons
+    case tracks(title: String, subtitle: String, tracks: [Track])
 }
 
 extension View {
@@ -30,6 +31,7 @@ extension View {
             case .local: CollectionView(source: .local)
             case .settings: SettingsView()
             case .addons: AddonsView()
+            case .tracks(let title, let subtitle, let tracks): CollectionView(source: .custom(title: title, subtitle: subtitle, tracks: tracks))
             }
         }
     }
@@ -487,4 +489,28 @@ struct AirPlayButton: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+/// A remote image that fills whatever frame it's given (no square constraint), with a colour callback.
+struct FillImage: View {
+    let url: URL?
+    var onImage: ((UIImage) -> Void)? = nil
+    @State private var image: UIImage?
+
+    var body: some View {
+        Color.clear
+            .overlay {
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill().transition(.opacity)
+                } else {
+                    ArtworkPlaceholder(seed: url?.absoluteString ?? "", size: 200)
+                }
+            }
+            .clipped()
+            .task(id: url) {
+                guard let loaded = await ArtworkLoader.image(at: url), !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.25)) { image = loaded }
+                onImage?(loaded)
+            }
+    }
 }

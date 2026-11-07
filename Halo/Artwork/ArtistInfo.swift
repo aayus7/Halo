@@ -30,9 +30,9 @@ actor ArtistInfoService {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let row = (obj["artists"] as? [[String: Any]])?.first { ($0["strArtist"] as? String)?.lowercased() == key }
             ?? (obj["artists"] as? [[String: Any]])?.first
-        func url(_ k: String) -> URL? { (row?[k] as? String).flatMap { $0.isEmpty ? nil : URL(string: $0) } }
+        func link(_ k: String) -> URL? { (row?[k] as? String).flatMap { $0.isEmpty ? nil : URL(string: $0) } }
         let bio = (row?["strBiographyEN"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        let info = Info(logo: url("strArtistLogo"), fanart: url("strArtistFanart"), wide: url("strArtistWideThumb"), bio: bio)
+        let info = Info(logo: link("strArtistLogo"), fanart: link("strArtistFanart"), wide: link("strArtistWideThumb"), bio: bio)
         cache[key] = info
         Store.save(cache, to: file)
         return info

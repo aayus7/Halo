@@ -337,7 +337,7 @@ final class SpotifyService {
             title: name,
             artist: artists.compactMap { $0["name"] as? String }.joined(separator: ", "),
             album: album?["name"] as? String,
-            duration: (j["duration_ms"] as? Double).map { $0 / 1000 },
+            duration: (j["duration_ms"] as? NSNumber).map { $0.doubleValue / 1000 },
             artworkURL: image(album?["images"]),
             source: .catalog(service: sourceID, id: id),
             isrc: isrc,

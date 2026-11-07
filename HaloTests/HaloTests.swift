@@ -59,6 +59,8 @@ final class AddonPipelineTests: XCTestCase {
     private func freshStore() -> AddonStore {
         let store = AddonStore()
         for addon in store.addons { store.remove(addon) }
+        // Start every test without remembered matches from earlier tests.
+        try? FileManager.default.removeItem(at: Paths.appSupport.appendingPathComponent("matches.json"))
         return store
     }
 

@@ -100,6 +100,7 @@ final class LibraryStore {
 
     private func savePlaylists() {
         Store.save(playlists, to: "playlists.json")
+        Backup.saveToKeychain()
     }
 
     // MARK: History & stats

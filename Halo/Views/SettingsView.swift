@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
@@ -7,6 +8,9 @@ struct SettingsView: View {
     @Environment(PlayerEngine.self) private var player
 
     @State private var showSound = false
+    @State private var exportDoc: BackupDocument?
+    @State private var showExporter = false
+    @State private var showImporter = false
 
     var body: some View {
         @Bindable var settings = settings
@@ -89,6 +93,24 @@ struct SettingsView: View {
                 Text("Gapless and crossfade prepare the next song ahead of time. EQ and effects work on files and progressive streams; HLS streams play untouched.")
             }
 
+            Section {
+                LabeledContent("Auto-backup", value: Backup.lastKeychainBackup.map {
+                    $0.formatted(date: .abbreviated, time: .shortened)
+                } ?? "Not yet")
+                Button {
+                    Backup.saveToKeychain()
+                    if let data = Backup.exportData() {
+                        exportDoc = BackupDocument(data: data)
+                        showExporter = true
+                    }
+                } label: { Label("Export Backup", systemImage: "square.and.arrow.up") }
+                Button { showImporter = true } label: { Label("Import Backup", systemImage: "square.and.arrow.down") }
+            } header: {
+                Text("Backup")
+            } footer: {
+                Text("Halo keeps a copy of your addons, their settings, Spotify connection, playlists and likes in the iOS Keychain and restores it after an update or reinstall. That works as long as you sign with the same certificate and keep the same bundle ID; if your signer changes the bundle ID, use Export / Import.")
+            }
+
             Section("About") {
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
                 Link("Addon protocol", destination: URL(string: "https://github.com/aayus7/Halo/blob/main/docs/ADDON_SPEC.md")!)
@@ -96,6 +118,19 @@ struct SettingsView: View {
         }
         .pageTitle("Settings")
         .sheet(isPresented: $showSound) { SoundSheet() }
+        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .json,
+                      defaultFilename: "Halo Backup") { _ in }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+            guard case .success(let url) = result else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                try Backup.importData(Data(contentsOf: url))
+                NoticeCenter.shared.show("Restart Halo to load everything.", title: "Backup imported", level: .success)
+            } catch {
+                NoticeCenter.shared.show(error.localizedDescription, title: "Import failed", level: .error)
+            }
+        }
     }
 }
 

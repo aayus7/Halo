@@ -68,6 +68,7 @@ final class AddonStore {
         stored[key] = value
         values[addon.id] = stored
         Store.save(values, to: valuesFile)
+        Backup.saveToKeychain()
     }
 
     // MARK: Install / manage
@@ -125,5 +126,6 @@ final class AddonStore {
 
     private func save() {
         Store.save(addons, to: fileName)
+        Backup.saveToKeychain()
     }
 }

@@ -123,6 +123,8 @@ final class PlayerEngine {
     @ObservationIgnored private var sleepTask: Task<Void, Never>?
     @ObservationIgnored private var timeControlObservations: [NSKeyValueObservation] = []
     @ObservationIgnored private var lastTickAt = Date()
+    /// Addons whose stream failed to play for a track, so the chain skips them for a while.
+    @ObservationIgnored private var failedAddons: [String: Set<String>] = [:]
 
     /// The playhead at `date`, interpolated between the 4 Hz ticks (for lyrics).
     func time(at date: Date) -> Double {
@@ -145,6 +147,7 @@ final class PlayerEngine {
         guard tracks.indices.contains(index) else { return }
         originalQueue = tracks
         queueTitle = title
+        failedAddons = [:]
         if shuffleEnabled {
             var rest = tracks
             let first = rest.remove(at: index)
@@ -408,45 +411,16 @@ final class PlayerEngine {
     }
 
     private func resolve(_ track: Track) async throws -> (StreamInfo, Track) {
+        let excluded = failedAddons[track.id] ?? []
         if let cached = resolvedCache[track.id], Date().timeIntervalSince(cached.at) < 600,
-           cached.info.expiresAt.map({ $0.timeIntervalSinceNow > 30 }) ?? true {
+           cached.info.expiresAt.map({ $0.timeIntervalSinceNow > 30 }) ?? true,
+           !(cached.playable.addonID.map(excluded.contains) ?? false) {
             return (cached.info, cached.playable)
         }
-        switch track.source {
-        case .local(let fileName):
+        if case .local(let fileName) = track.source {
             return (StreamInfo(url: Paths.music.appendingPathComponent(fileName)), track)
-        case .addon(let addonID, let trackID):
-            if let direct = track.directStreamURL {
-                return (StreamInfo(url: direct), track)
-            }
-            if let ctx = addons?.context(forID: addonID) {
-                let info = try await AddonClient.resolveStream(ctx, trackID: trackID)
-                resolvedCache[track.id] = (info, track, Date())
-                return (info, track)
-            }
-            // Addon gone: try to find the same song elsewhere.
-            return try await resolveViaMatch(track)
-        case .catalog:
-            return try await resolveViaMatch(track)
         }
-    }
-
-    private func resolveViaMatch(_ track: Track) async throws -> (StreamInfo, Track) {
-        let playable = try await resolver.playable(for: track)
-        guard case .addon(let addonID, let trackID) = playable.source else { throw PlayerError.addonMissing }
-        let info: StreamInfo
-        if let direct = playable.directStreamURL {
-            info = StreamInfo(url: direct)
-        } else if let ctx = addons?.context(forID: addonID) {
-            do {
-                info = try await AddonClient.resolveStream(ctx, trackID: trackID)
-            } catch AddonError.notFound {
-                resolver.forget(track)
-                throw AddonError.notFound
-            }
-        } else {
-            throw PlayerError.addonMissing
-        }
+        let (info, playable) = try await resolver.stream(for: track, excluding: excluded)
         resolvedCache[track.id] = (info, playable, Date())
         return (info, playable)
     }
@@ -461,6 +435,20 @@ final class PlayerEngine {
         item.audioTimePitchAlgorithm = settings.keepPitch ? .spectral : .varispeed
         item.preferredForwardBufferDuration = 30
         return item
+    }
+
+    /// The stream an addon gave us wouldn't play: try the same song on the next addon.
+    private func retryOnNextAddon(_ track: Track) -> Bool {
+        guard !track.isLocal, let addonID = playingAs?.addonID else { return false }
+        var excluded = failedAddons[track.id] ?? []
+        excluded.insert(addonID)
+        failedAddons[track.id] = excluded
+        resolvedCache[track.id] = nil
+        let remaining = addons?.enabled.filter { !excluded.contains($0.id) } ?? []
+        guard !remaining.isEmpty else { return false }
+        NoticeCenter.shared.show("Trying \(remaining[0].displayName)…", title: "\(addons?.addon(withID: addonID)?.displayName ?? "Addon") couldn't play it")
+        loadCurrent(autoplay: true)
+        return true
     }
 
     private func handleFailure(track: Track, error: Error) {
@@ -718,6 +706,7 @@ final class PlayerEngine {
             Task { @MainActor in
                 guard let self, generation == self.loadGeneration, deckIndex == self.activeDeck else { return }
                 if status == .failed, let track = self.currentTrack {
+                    if self.retryOnNextAddon(track) { return }
                     self.handleFailure(track: track, error: NSError(
                         domain: "Halo", code: 1, userInfo: [NSLocalizedDescriptionKey: message]))
                 } else if status == .readyToPlay {

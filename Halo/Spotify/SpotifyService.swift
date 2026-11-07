@@ -251,11 +251,11 @@ final class SpotifyService {
         let j = try await get("/albums/\(album.albumID)")
         let items = ((j["tracks"] as? [String: Any])?["items"] as? [[String: Any]]) ?? []
         let art = Self.image(j["images"])
-        return items.compactMap { row in
-            var t = Self.track(row)
-            t?.album = t?.album ?? album.title
-            t?.artworkURL = t?.artworkURL ?? art ?? album.artworkURL
-            t?.albumID = album.albumID
+        return items.compactMap { row -> Track? in
+            guard var t = Self.track(row) else { return nil }
+            if t.album == nil { t.album = album.title }
+            if t.artworkURL == nil { t.artworkURL = art ?? album.artworkURL }
+            t.albumID = album.albumID
             return t
         }
     }

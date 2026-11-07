@@ -2,13 +2,17 @@
 
 A personal iPhone music player. It sits between BitChord and Eclipse: a native SwiftUI player with **Eclipse-compatible addon support** plus your own local files.
 
-## What's in v0.1
+## What's in v0.2
 
-- **Addons**: paste any Eclipse/BitChord-style addon URL. Search across all enabled addons at once. Streams are resolved lazily, and the next track is prefetched. See [`docs/ADDON_SPEC.md`](docs/ADDON_SPEC.md).
-- **Local library**: import files (MP3, AAC, ALAC, FLAC, WAV, AIFF), or drop them into Files › On My iPhone › Halo › Music and pull to refresh.
-- **Player**: queue, play next, add to queue, shuffle, and repeat (off / all / one). Background audio, lock screen and Control Center controls, AirPlay, and interruption handling.
-- **Home**: Recently Played, Top Picks, On Repeat, Liked Songs, and On This iPhone.
-- **Likes and history**, saved on the device.
+- **Liquid Glass UI** (iOS 26) modelled on Chroma: full-bleed artwork player, heavy type, a glass mini player and tab bar, and pages tinted with artwork colours.
+- **Addons**: the full Eclipse protocol. Search covers songs, albums, artists and playlists; there are album, artist and playlist pages, Home rows from addon catalogs, per-addon settings (including per-network ones), notices, ISRC/resolve matching, podcast and audiobook modes, and stream info. See [`docs/ADDON_SPEC.md`](docs/ADDON_SPEC.md).
+- **Spotify Home import**: connect your own Spotify app (Settings › Spotify Import). Home fills with your mixes, playlists, top songs, saved albums and artists. Songs play through your addons.
+- **Artwork**: hi-res covers from Apple, and animated covers with your own MusicKit token ([`docs/ANIMATED_ARTWORK.md`](docs/ANIMATED_ARTWORK.md)).
+- **Lyrics**: synced, word by word, with the other lines blurred (LRCLIB, or a `.lrc` file next to a local song).
+- **Playback**: gapless, crossfade (0–12 s), a 10-band EQ with presets, bass boost, stereo width, speed with or without pitch, a sleep timer, and the queue.
+- **Library**: playlists, likes, history, and local files (MP3, AAC, ALAC, FLAC, WAV, AIFF).
+
+Requires **iOS 26**.
 
 ## Building (no Mac needed)
 

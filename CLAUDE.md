@@ -14,16 +14,24 @@ Read this first. It carries the history from the first planning session (Nov 202
 - **GitHub Actions** (`.github/workflows/build.yml`, `macos-15`) runs XcodeGen, then `xcodebuild` with signing off, and uploads the artifact `Halo-unsigned-ipa` plus `build-log`.
 - No `.xcodeproj` is committed. `project.yml` (XcodeGen) is the source of truth. Info.plist is generated from `project.yml`.
 - Claude can't compile Swift locally, because download.swift.org is blocked in the sandbox. **CI is the compiler**: push, watch the run, read `build-log`, fix, repeat.
-- v0.1 was written blind and has **never been compiled**. The first job is to get CI green.
+- CI is green as of v0.2. It uses `setup-xcode latest-stable` (Xcode 26.3, iOS 26.2 SDK, Swift 6.2). Helper: wait for the run, then grep the job log for `error:`.
 
-## Architecture (SwiftUI, iOS 17+, Swift 5 language mode, @Observable)
-- `Halo/App/HaloApp.swift`: creates `LibraryStore`, `AddonStore` and `PlayerEngine`, injects them via `.environment`, and sets `Theme` colors.
-- `Halo/Models/Track.swift`: `Track` (source `.local(fileName)` or `.addon(addonID, trackID)`), `StreamInfo`, `RepeatMode`, `formatTime`.
-- `Halo/Addons/`: `AddonModels` (wire format), `AddonClient` (HTTP), `AddonStore` (installed addons, persisted to JSON).
-- `Halo/Library/LibraryStore.swift`: local files in Documents/Music (Files-app visible), likes, history, play counts, `mostPlayed`, `topPicks`, embedded-artwork extraction.
-- `Halo/Player/PlayerEngine.swift`: AVPlayer, queue, shuffle/repeat, lazy stream resolve + prefetch of the next track, lock screen (MPNowPlayingInfoCenter / MPRemoteCommandCenter), interruptions, auto-skip on failure.
-- `Halo/Views/`: Root (4 tabs + mini player via safeAreaInset), Home (shelves), Search (local + all addons in parallel), Library, Addons, NowPlaying (+ queue, AirPlay), Components.
-- Persistence: JSON files in Application Support/Halo (`Store`/`Paths` in `Support/Persistence.swift`).
+## Direction (owner, Nov 2026)
+- **UI target: Chroma (chroma.pw) / spoti.pw look.** Liquid Glass, true black, heavy type, artwork-tinted pages. The owner shared screenshots: full-bleed artwork player with a heavy title and ✕ ☆ ⋯, a thin scrubber, lyrics/AirPlay/queue along the bottom; word-by-word lyrics with blurred neighbouring lines; Home with a hero "Radio" carousel and a 2-column tinted shortcut grid; playlist page with a centred cover and shuffle · Play · +.
+- spoti.pw is **PolyForm Strict**: read it for ideas only, never copy its code. BitChord is GPL-3.
+- **Home import from Spotify** via the official Web API (PKCE, the user's own Client ID, redirect `halo://spotify-callback`). Spotify blocks its algorithmic playlists for new apps, so "Mixes" are built from top artists. Imported songs are `.catalog` tracks that get matched to addons (ISRC → `/resolve` → scored search).
+- **Animated covers** use the official Apple Music API with the owner's own MusicKit developer token (`docs/ANIMATED_ARTWORK.md`, `tools/musickit-token.mjs`). Scraping the web player's token was refused as access circumvention; don't go back to it. Hi-res static covers come from the public iTunes Search API.
+
+## Architecture (SwiftUI, **iOS 26+**, Xcode 26 on CI, Swift 5 language mode, @Observable)
+- `App/HaloApp.swift`: creates the stores and injects them: `LibraryStore`, `AddonStore`, `PlayerEngine`, `SpotifyService`, `NavigationModel`, `AppSettings.shared`.
+- `Models/Track.swift`: `Track` (source `.local` / `.addon` / `.catalog`), `StreamInfo`, `Album`, `Artist`, `RemotePlaylist`, `UserPlaylist`, `Chapter`.
+- `Addons/`: the full Eclipse protocol (`AddonModels`), the client (`AddonClient`: notices, 429/503 retry, album/artist/playlist/catalog/resolve), and `AddonStore` (per-addon setting values, per-network values via NWPathMonitor, rename, notices toggle, order).
+- `Player/PlayerEngine.swift`: two `Deck`s (AVPlayer each). The standby deck preloads the next song for gapless playback and crossfade. Also handles speed and keep-pitch, the sleep timer, podcast skips, and the lock screen. `AudioEffects.swift` is an MTAudioProcessingTap with a 10-band biquad EQ, preamp, bass shelf and stereo width; it doesn't apply to HLS. `TrackResolver.swift` matches catalog tracks to addons.
+- `Artwork/`: `ArtworkService` (iTunes hi-res and Apple Music motion), `Palette` (colour extraction).
+- `Lyrics/Lyrics.swift`: LRC parser (enhanced word stamps, or estimated word timing), and `LyricsService` (sidecar .lrc, then LRCLIB).
+- `Spotify/SpotifyService.swift`: PKCE login, Keychain tokens, Home import, and details for playlists, albums and artists.
+- `Views/`: `Design` (glass helpers, fonts), `Components` (artwork, motion artwork, rows, cards, shelves, `Route`), `RootView` (TabView with search role, mini player in `tabViewBottomAccessory`, toasts), `HomeView`, `SearchView`, `LibraryView`, `CollectionView` (album / playlist / liked / local) and `ArtistView`, `NowPlayingView` (+ `Scrubber`, queue), `LyricsView`, `SettingsView` (+ Sound/EQ, Spotify), `AddonsView` (+ per-addon settings form).
+- Persistence: JSON in Application Support/Halo (`Store`), preferences in UserDefaults (`halo.*`), Spotify tokens in the Keychain.
 
 ## Addon protocol
 - The same protocol as Eclipse/BitChord: an HTTP server with `/manifest.json`, `/search?q=` (returns `{tracks:[…]}`) and `/stream/{id}` (returns `{url,…}`). Full detail is in `docs/ADDON_SPEC.md`.

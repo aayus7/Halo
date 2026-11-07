@@ -11,7 +11,7 @@ enum AddonError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "That doesn't look like a valid addon URL."
-        case .notFound: return "This addon doesn't have that track."
+        case .notFound: return "This addon doesn't have that."
         case .badStatus(let code): return "The addon responded with HTTP \(code)."
         case .invalidResponse(let what): return "The addon sent an unexpected \(what)."
         case .addonMessage(let message): return message
@@ -20,14 +20,24 @@ enum AddonError: LocalizedError {
     }
 }
 
+/// Everything a request to one addon needs: the addon and the setting values to send.
+struct AddonContext: Sendable {
+    var addon: InstalledAddon
+    /// The manifest's setting defaults overlaid with the user's choices.
+    var params: [String: String]
+    var noticesEnabled: Bool
+
+    var id: String { addon.id }
+}
+
 /// Talks to addons over HTTP. Compatible with the Eclipse / BitChord addon protocol.
 /// See docs/ADDON_SPEC.md.
 enum AddonClient {
     static let session: URLSession = {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForRequest = 25
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.httpAdditionalHeaders = ["User-Agent": "Halo/0.1 (iOS)"]
+        config.httpAdditionalHeaders = ["User-Agent": "Halo/0.2 (iOS)"]
         return URLSession(configuration: config)
     }()
 
@@ -36,6 +46,9 @@ enum AddonClient {
     static func normalize(_ input: String) throws -> (manifest: URL, base: URL) {
         var s = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { throw AddonError.invalidURL }
+        if s.lowercased().hasPrefix("eclipse://") || s.lowercased().hasPrefix("halo://") {
+            s = String(s[s.range(of: "://")!.upperBound...])
+        }
         if !s.contains("://") { s = "https://" + s }
         guard var comps = URLComponents(string: s), let host = comps.host, !host.isEmpty,
               let scheme = comps.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
@@ -60,35 +73,99 @@ enum AddonClient {
         let (manifestURL, base) = try normalize(input)
         let manifest: AddonManifest
         do {
-            manifest = try await get(manifestURL, what: "manifest")
+            manifest = try await get(manifestURL, what: "manifest", notices: nil)
         } catch AddonError.notFound {
             throw AddonError.addonMessage("No addon manifest at that URL.")
         }
         guard !manifest.id.isEmpty else {
             throw AddonError.addonMessage("That URL answered, but not with an addon manifest.")
         }
-        guard manifest.supports("search") else {
-            throw AddonError.addonMessage("This addon declares \(manifest.resources.joined(separator: ", ")). Halo needs search.")
+        guard manifest.supports("search") || manifest.supports("catalog") else {
+            throw AddonError.addonMessage("This addon declares \(manifest.resources.joined(separator: ", ")). Halo needs search or catalog.")
         }
         return InstalledAddon(manifest: manifest, baseURL: base)
     }
 
-    static func search(_ addon: InstalledAddon, query: String) async throws -> [Track] {
-        var params = addon.manifest.defaultParameters
+    // MARK: Endpoints
+
+    static func search(_ ctx: AddonContext, query: String) async throws -> AddonSearchResult {
+        var params = ctx.params
         params["q"] = query
-        guard let url = endpoint(base: addon.baseURL, segments: ["search"], params: params) else {
-            throw AddonError.invalidURL
-        }
-        let response: SearchResponse = try await get(url, what: "search result")
-        return response.tracks.map { $0.toTrack(addonID: addon.id) }
+        let url = try url(ctx, ["search"], params)
+        let r: SearchResponse = try await get(url, what: "search result", notices: ctx)
+        let id = ctx.id
+        return AddonSearchResult(
+            tracks: r.tracks.map { $0.toTrack(addonID: id) },
+            albums: r.albums.map { $0.toAlbum(addonID: id) },
+            artists: r.artists.map { $0.toArtist(addonID: id) },
+            playlists: r.playlists.map { $0.toPlaylist(addonID: id) }
+        )
     }
 
-    static func resolveStream(_ addon: InstalledAddon, trackID: String) async throws -> StreamInfo {
-        guard let url = endpoint(base: addon.baseURL, segments: ["stream", trackID],
-                                 params: addon.manifest.defaultParameters) else {
-            throw AddonError.invalidURL
+    static func album(_ ctx: AddonContext, id albumID: String) async throws -> (Album, [Track]) {
+        let r: AddonAlbum = try await get(try url(ctx, ["album", albumID], ctx.params), what: "album", notices: ctx)
+        return (r.toAlbum(addonID: ctx.id), r.tracksFilled(addonID: ctx.id))
+    }
+
+    static func artist(_ ctx: AddonContext, id artistID: String) async throws -> (Artist, [Track], [Album]) {
+        let r: AddonArtist = try await get(try url(ctx, ["artist", artistID], ctx.params), what: "artist", notices: ctx)
+        let tracks = r.topTracks.map { t -> Track in
+            var track = t.toTrack(addonID: ctx.id)
+            if track.artistID == nil { track.artistID = r.id }
+            return track
         }
-        let response: StreamResponse = try await get(url, what: "stream")
+        return (r.toArtist(addonID: ctx.id), tracks, r.albums.map { $0.toAlbum(addonID: ctx.id) })
+    }
+
+    static func playlist(_ ctx: AddonContext, id playlistID: String) async throws -> (RemotePlaylist, [Track]) {
+        let r: AddonPlaylist = try await get(try url(ctx, ["playlist", playlistID], ctx.params), what: "playlist", notices: ctx)
+        return (r.toPlaylist(addonID: ctx.id), r.tracks.map { $0.toTrack(addonID: ctx.id) })
+    }
+
+    static func catalog(_ ctx: AddonContext, _ catalog: AddonCatalog, skip: Int = 0) async throws -> CatalogRow {
+        var params = ctx.params
+        params["skip"] = String(skip)
+        let r: CatalogResponse = try await get(try url(ctx, ["catalog", catalog.id], params), what: "catalog", notices: ctx)
+        var row = CatalogRow(addonID: ctx.id, addonName: ctx.addon.displayName, catalog: catalog)
+        for item in r.items {
+            if let t = item.track { row.tracks.append(t.toTrack(addonID: ctx.id)) }
+            if let a = item.album { row.albums.append(a.toAlbum(addonID: ctx.id)) }
+            if let a = item.artist { row.artists.append(a.toArtist(addonID: ctx.id)) }
+            if let p = item.playlist { row.playlists.append(p.toPlaylist(addonID: ctx.id)) }
+        }
+        return row
+    }
+
+    /// Asks the addon for the exact recording. Returns nil when it doesn't have it.
+    static func resolve(_ ctx: AddonContext, isrc: String?, title: String, artist: String, duration: Double?) async throws -> Track? {
+        if let isrc, !isrc.isEmpty, ctx.addon.manifest.supports("isrc") {
+            var params = ctx.params
+            params["isrc"] = isrc
+            do {
+                let r: ISRCResponse = try await get(try url(ctx, ["resolve-isrc"], params), what: "ISRC lookup", notices: ctx)
+                if let id = r.trackID {
+                    return Track(id: Track.addonID(addon: ctx.id, track: id), title: title, artist: artist,
+                                 duration: duration, source: .addon(addonID: ctx.id, trackID: id), isrc: isrc)
+                }
+            } catch AddonError.notFound {}
+        }
+        guard ctx.addon.manifest.supports("resolve") else { return nil }
+        var params = ctx.params
+        if let isrc, !isrc.isEmpty { params["isrc"] = isrc }
+        params["title"] = title
+        params["artist"] = artist
+        if let duration { params["durationMs"] = String(Int(duration * 1000)) }
+        do {
+            let r: ResolveResponse = try await get(try url(ctx, ["resolve"], params), what: "resolve", notices: ctx)
+            return r.item?.toTrack(addonID: ctx.id)
+        } catch AddonError.notFound {
+            return nil
+        }
+    }
+
+    static func resolveStream(_ ctx: AddonContext, trackID: String) async throws -> StreamInfo {
+        let response: StreamResponse = try await get(try url(ctx, ["stream", trackID], ctx.params),
+                                                     what: "stream", notices: ctx, retryUnavailable: true)
         if let error = response.error, !error.isEmpty, response.url == nil {
             throw AddonError.addonMessage(error)
         }
@@ -101,7 +178,20 @@ enum AddonClient {
         if response.transport == "dash" {
             throw AddonError.unsupported("This addon returned a DASH stream. iPhone only plays HLS or plain files. Try a different quality setting.")
         }
-        return StreamInfo(url: streamURL, headers: response.headers)
+        if let codec = response.codec?.lowercased(), ["opus", "vorbis"].contains(codec),
+           (response.container?.lowercased() ?? "ogg") == "ogg" {
+            throw AddonError.unsupported("This addon returned \(codec.capitalized) in Ogg, which iPhone can't play. Try a different quality setting.")
+        }
+        return response.toStreamInfo(streamURL)
+    }
+
+    // MARK: Plumbing
+
+    private static func url(_ ctx: AddonContext, _ segments: [String], _ params: [String: String]) throws -> URL {
+        guard let url = endpoint(base: ctx.addon.baseURL, segments: segments, params: params) else {
+            throw AddonError.invalidURL
+        }
+        return url
     }
 
     /// {base}/{segments…}?{base query + params}, with each segment percent-encoded.
@@ -121,30 +211,46 @@ enum AddonClient {
             items.append(URLQueryItem(name: key, value: params[key]))
         }
         comps.queryItems = items.isEmpty ? nil : items
+        // "+" in a value would otherwise be read as a space by most servers.
+        comps.percentEncodedQuery = comps.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         return comps.url
     }
 
-    private static func get<T: Decodable>(_ url: URL, what: String) async throws -> T {
+    private static func get<T: Decodable>(_ url: URL, what: String, notices ctx: AddonContext?,
+                                          retryUnavailable: Bool = false) async throws -> T {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         var attempt = 0
         while true {
+            try Task.checkCancellation()
             let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode ?? 200
+            await postNotice(from: data, ctx: ctx)
 
+            let retryAfter = http?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
             if status == 429, attempt < 2 {
                 // Busy addon: wait it out instead of treating it as "no track".
-                let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
-                let wait = min(Double(header ?? "") ?? pow(2, Double(attempt)), 5)
+                let wait = min(retryAfter ?? pow(2, Double(attempt)), 5)
+                attempt += 1
+                try await Task.sleep(for: .seconds(wait))
+                continue
+            }
+            if status == 503, retryUnavailable, attempt < 4 {
+                // "Still preparing this song." Eclipse waits up to 30 s per try.
+                let wait = min(retryAfter ?? 5, 30)
                 attempt += 1
                 try await Task.sleep(for: .seconds(wait))
                 continue
             }
             if status == 404 { throw AddonError.notFound }
             guard (200..<300).contains(status) else {
-                if let message = try? JSONDecoder().decode([String: String].self, from: data)["error"] {
-                    throw AddonError.addonMessage(message)
+                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let message = obj["error"] as? String { throw AddonError.addonMessage(message) }
+                    if let notice = obj["notice"] as? [String: Any], let message = notice["message"] as? String {
+                        throw AddonError.addonMessage(message)
+                    }
                 }
                 throw AddonError.badStatus(status)
             }
@@ -153,6 +259,17 @@ enum AddonClient {
             } catch {
                 throw AddonError.invalidResponse(what)
             }
+        }
+    }
+
+    private static func postNotice(from data: Data, ctx: AddonContext?) async {
+        guard let ctx, ctx.noticesEnabled, ctx.addon.manifest.supports("notifications"),
+              let envelope = try? JSONDecoder().decode(NoticeEnvelope.self, from: data),
+              let notice = envelope.notice else { return }
+        let name = ctx.addon.displayName
+        let icon = ctx.addon.manifest.icon
+        await MainActor.run {
+            NoticeCenter.shared.post(notice, source: name, icon: icon)
         }
     }
 }

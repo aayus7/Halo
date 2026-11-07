@@ -74,3 +74,46 @@ Halo strips a trailing `*.json` filename and uses the rest as the **base URL**. 
 ## Playable formats on iPhone
 
 MP3, AAC/M4A, ALAC, FLAC, WAV/AIFF, and HLS (`.m3u8`). Not playable: Opus/WebM, DASH.
+
+## Optional endpoints (Eclipse-compatible)
+
+Halo implements the rest of the Eclipse addon guide too:
+
+| Endpoint | When it's used |
+|---|---|
+| `GET /album/{id}` → `{id,title,artist,artworkURL,year,description,tracks:[…]}` | Album pages (search results with `albums`) |
+| `GET /artist/{id}` → `{id,name,artworkURL,bio,genres,topTracks:[…],albums:[…]}` | Artist pages |
+| `GET /playlist/{id}` → `{id,title,creator,artworkURL,description,tracks:[…]}` | Playlist pages |
+| `GET /catalog/{id}?skip=N` → `{items:[{type,…}]}` | Home rows, declared in `manifest.catalogs` with `"catalog"` in `resources` |
+| `GET /resolve-isrc?isrc=` → `{trackId}` | Playing imported songs (Spotify Home) by exact recording; needs `"isrc"` in `resources` |
+| `GET /resolve?isrc=&title=&artist=&durationMs=` → `{item:{…}\|null}` | Same, by identity; needs `"resolve"` in `resources` |
+
+Search may return `tracks`, `albums`, `artists` and `playlists`. Tracks may carry `isrc`, `albumId`,
+`artistId`, `explicit`, and `durationMs` instead of `duration`.
+
+### Settings
+
+`manifest.settings[]` items with `type` `select` / `toggle` / `text` / `number`, `label`, `help`,
+`default`, `options`, `perNetwork`, `min`/`max`/`step`, `maxLength`, `placeholder` get a settings
+screen. Values are sent as query parameters on every request; `perNetwork` settings send the Wi-Fi or
+cellular value depending on the connection.
+
+### Stream extras
+
+`/stream` may also return `codec`, `container`, `sampleRate`, `bitDepth` (shown under "Stream" in the
+player's ⋯ menu), `expiresAt` (Unix seconds; Halo re-resolves before it), and `chapters`
+(`[{title,startTime}]`). `manifest.contentType` `"podcast"` / `"audiobook"` swaps previous/next for
+15 s / 30 s skips.
+
+Answer `/stream` with **503 + `Retry-After`** while a song is being prepared; Halo waits (≤30 s per
+try, 4 tries).
+
+### Notices
+
+With `"notifications"` in `resources`, any JSON reply may include
+`{"notice":{"message","title","level":"info|success|warning|error","id","progress","duration"}}`.
+Halo shows it as a toast with the addon's icon. Users can turn notices off per addon.
+
+### Install links
+
+`halo://install?url=<urlencoded manifest URL>` installs an addon from a link.

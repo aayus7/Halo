@@ -3,123 +3,138 @@ import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @Environment(LibraryStore.self) private var library
-    @Environment(PlayerEngine.self) private var player
+    @Environment(SpotifyService.self) private var spotify
 
     @State private var showImporter = false
+    @State private var newPlaylistName = ""
+    @State private var showNewPlaylist = false
 
     var body: some View {
         List {
             Section {
-                NavigationLink {
-                    TrackListView(title: "Liked Songs") { library.liked }
-                } label: {
-                    LibraryLink(title: "Liked Songs", systemImage: "heart.fill",
-                                count: library.liked.count, tint: Theme.like)
-                }
-                NavigationLink {
-                    TrackListView(title: "Recently Played") { library.history }
-                } label: {
-                    LibraryLink(title: "Recently Played", systemImage: "clock.fill",
-                                count: library.history.count, tint: .orange)
-                }
+                row(.spotifyLiked, title: "Liked Songs", subtitle: spotify.isConnected ? "Spotify · \(spotify.home.likedTotal) songs" : nil,
+                    icon: "heart.fill", tint: Color(red: 0.4, green: 0.3, blue: 0.95), visible: spotify.isConnected)
+                row(.liked, title: spotify.isConnected ? "Liked in Halo" : "Liked Songs", subtitle: "\(library.liked.count) songs",
+                    icon: "star.fill", tint: Theme.like, visible: true)
+                row(.history, title: "Recently Played", subtitle: nil, icon: "clock.fill", tint: .orange, visible: true)
+                row(.local, title: "On This iPhone", subtitle: "\(library.localTracks.count) files", icon: "iphone", tint: .teal, visible: true)
             }
+            .listRowBackground(Color.clear)
 
             Section {
-                if library.localTracks.isEmpty {
-                    Text("Tap + to import audio files, or drop them into Files › On My iPhone › Halo › Music and pull to refresh.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(Array(library.localTracks.enumerated()), id: \.element.id) { index, track in
-                    TrackRow(track: track, onDelete: { library.deleteLocal(track) })
-                        .onTapGesture { player.play(library.localTracks, startAt: index) }
-                }
-            } header: {
-                HStack {
-                    Text("On This iPhone")
-                    Spacer()
-                    if !library.localTracks.isEmpty {
-                        Text("\(library.localTracks.count) songs")
+                ForEach(library.playlists) { p in
+                    NavigationLink(value: Route.userPlaylist(p.id)) {
+                        LibraryItemRow(title: p.name, subtitle: "Playlist · \(p.tracks.count) songs",
+                                       url: p.tracks.first?.artworkURL, track: p.tracks.first)
                     }
                 }
+                .onDelete { idx in idx.map { library.playlists[$0].id }.forEach(library.deletePlaylist) }
+                Button { showNewPlaylist = true } label: {
+                    Label("New Playlist", systemImage: "plus").font(.body.weight(.semibold))
+                }
+            } header: {
+                Text("Playlists").font(.heavy(20)).foregroundStyle(.primary).textCase(nil)
+            }
+            .listRowBackground(Color.clear)
+
+            if !spotify.home.playlists.isEmpty {
+                Section {
+                    ForEach(spotify.home.playlists) { p in
+                        NavigationLink(value: Route.playlist(p)) {
+                            LibraryItemRow(title: p.title, subtitle: ["Playlist", p.creator ?? ""].filter { !$0.isEmpty }.joined(separator: " · "), url: p.artworkURL)
+                        }
+                    }
+                } header: {
+                    Text("From Spotify").font(.heavy(20)).foregroundStyle(.primary).textCase(nil)
+                }
+                .listRowBackground(Color.clear)
+            }
+
+            if !spotify.home.albums.isEmpty {
+                Section {
+                    ForEach(spotify.home.albums) { a in
+                        NavigationLink(value: Route.album(a)) {
+                            LibraryItemRow(title: a.title, subtitle: "Album · \(a.artist)", url: a.artworkURL)
+                        }
+                    }
+                } header: {
+                    Text("Albums").font(.heavy(20)).foregroundStyle(.primary).textCase(nil)
+                }
+                .listRowBackground(Color.clear)
             }
         }
-        .navigationTitle("Library")
+        .listStyle(.plain)
+        .pageTitle("Library")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showImporter = true } label: { Image(systemName: "plus") }
+                Menu {
+                    Button { showNewPlaylist = true } label: { Label("New Playlist", systemImage: "music.note.list") }
+                    Button { showImporter = true } label: { Label("Import Files", systemImage: "square.and.arrow.down") }
+                } label: {
+                    Image(systemName: "plus")
+                }
             }
         }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio],
-                      allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result {
                 Task { await library.importFiles(urls) }
             }
         }
-        .refreshable { await library.rescan() }
+        .alert("New Playlist", isPresented: $showNewPlaylist) {
+            TextField("Name", text: $newPlaylistName)
+            Button("Create") {
+                library.createPlaylist(newPlaylistName)
+                newPlaylistName = ""
+            }
+            Button("Cancel", role: .cancel) { newPlaylistName = "" }
+        }
+        .refreshable {
+            await library.rescan()
+            await spotify.refreshHome(force: true)
+        }
         .overlay {
             if library.isImporting {
                 ProgressView("Importing…")
                     .padding(24)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ route: Route, title: String, subtitle: String?, icon: String, tint: Color, visible: Bool) -> some View {
+        if visible {
+            NavigationLink(value: route) {
+                HStack(spacing: 14) {
+                    Image(systemName: icon)
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 56, height: 56)
+                        .background(LinearGradient(colors: [tint, tint.opacity(0.55)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.system(size: 17, weight: .bold))
+                        if let subtitle { Text(subtitle).font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary) }
+                    }
+                }
             }
         }
     }
 }
 
-private struct LibraryLink: View {
+struct LibraryItemRow: View {
     let title: String
-    let systemImage: String
-    let count: Int
-    let tint: Color
+    var subtitle: String
+    var url: URL?
+    var track: Track? = nil
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: systemImage)
-                .font(.title3)
-                .foregroundStyle(tint)
-                .frame(width: 44, height: 44)
-                .background(tint.opacity(0.18), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            Text(title).font(.body.weight(.medium))
-            Spacer()
-            Text("\(count)").foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct TrackListView: View {
-    let title: String
-    let tracks: () -> [Track]
-
-    @Environment(PlayerEngine.self) private var player
-
-    var body: some View {
-        let items = tracks()
-        List {
-            if items.isEmpty {
-                ContentUnavailableView("Nothing here yet", systemImage: "music.note.list")
-                    .listRowSeparator(.hidden)
-            } else {
-                HStack(spacing: 12) {
-                    Button { player.play(items) } label: {
-                        Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button { player.playShuffled(items) } label: {
-                        Label("Shuffle", systemImage: "shuffle").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .controlSize(.large)
-                .listRowSeparator(.hidden)
-
-                ForEach(Array(items.enumerated()), id: \.offset) { index, track in
-                    TrackRow(track: track)
-                        .onTapGesture { player.play(items, startAt: index) }
-                }
+            ArtworkView(track: track, url: url, size: 56, cornerRadius: 8, pixelSize: 200)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 17, weight: .bold)).lineLimit(1)
+                Text(subtitle).font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
             }
         }
-        .listStyle(.plain)
-        .navigationTitle(title)
     }
 }

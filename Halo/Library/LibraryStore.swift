@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Observation
+import SwiftUI
 
 @MainActor
 @Observable
@@ -10,6 +11,7 @@ final class LibraryStore {
     private(set) var history: [Track] = []
     private(set) var playCounts: [String: Int] = [:]
     private(set) var isImporting = false
+    private(set) var playlists: [UserPlaylist] = []
 
     @ObservationIgnored private var knownTracks: [String: Track] = [:]
 
@@ -32,6 +34,7 @@ final class LibraryStore {
             for t in snap.known { knownTracks[t.id] = t }
         }
         localTracks = Store.load([Track].self, from: "local.json") ?? []
+        playlists = Store.load([UserPlaylist].self, from: "playlists.json") ?? []
         Task { await rescan() }
     }
 
@@ -48,6 +51,55 @@ final class LibraryStore {
             liked.insert(track, at: 0)
         }
         save()
+    }
+
+    // MARK: Playlists
+
+    @discardableResult
+    func createPlaylist(_ name: String, tracks: [Track] = []) -> UserPlaylist {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let playlist = UserPlaylist(name: trimmed.isEmpty ? "New Playlist" : trimmed, tracks: tracks)
+        playlists.insert(playlist, at: 0)
+        savePlaylists()
+        return playlist
+    }
+
+    func playlist(_ id: String) -> UserPlaylist? {
+        playlists.first { $0.id == id }
+    }
+
+    func add(_ tracks: [Track], to playlistID: String) {
+        guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        let existing = Set(playlists[i].tracks.map(\.id))
+        playlists[i].tracks += tracks.filter { !existing.contains($0.id) }
+        savePlaylists()
+    }
+
+    func remove(at offsets: IndexSet, from playlistID: String) {
+        guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        playlists[i].tracks.remove(atOffsets: offsets)
+        savePlaylists()
+    }
+
+    func move(from source: IndexSet, to destination: Int, in playlistID: String) {
+        guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        playlists[i].tracks.move(fromOffsets: source, toOffset: destination)
+        savePlaylists()
+    }
+
+    func rename(_ playlistID: String, to name: String) {
+        guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        playlists[i].name = name
+        savePlaylists()
+    }
+
+    func deletePlaylist(_ playlistID: String) {
+        playlists.removeAll { $0.id == playlistID }
+        savePlaylists()
+    }
+
+    private func savePlaylists() {
+        Store.save(playlists, to: "playlists.json")
     }
 
     // MARK: History & stats
